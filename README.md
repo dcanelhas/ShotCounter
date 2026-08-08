@@ -19,6 +19,9 @@ This app uses the accelerometer to measure recoil (as spike in acceleration magn
 LICENSE covers the use of everything in this repository except for the font,
 which is distributed under the SIL OpenFont License (resources/fonts/LICENSE) 
 
+## Releases
+New releases will be made available on the [Pebble AppStore](https://apps.repebble.com/d9ae0d91c6b94bd2add22405)
+
 ## Note for Developers:
 
 If you want to build/modify this you should import the zipped contents of this repository as a new project to cloudpebble.repebble.com
