@@ -12,4 +12,5 @@ Usage instructions:
 - Short press select to reset count
 - Long press select to increase sensitivity threshold by 2g (up to a maximum of 16)
 
-See LICENSE
+LICENSE covers the use of everything in this repository except for the font,
+which is distributed under the SIL OpenFont License (resources/fonts/LICENSE) 
