@@ -1,0 +1,46 @@
+{
+    "author": "DRC",
+    "dependencies": {},
+    "keywords": [],
+    "name": "shotcounter",
+    "pebble": {
+        "capabilities": [
+            "configurable"
+        ],
+        "displayName": "Shot & Recoil Counter",
+        "enableMultiJS": true,
+        "messageKeys": [
+            "THRESHOLD_MG",
+            "THEME",
+            "SHOW_MAG",
+            "ROF_RPS"
+        ],
+        "projectType": "native",
+        "resources": {
+            "media": [
+                {
+                    "file": "fonts/LECO_72.ttf",
+                    "name": "FONT_HUGE_NUMBERS_72",
+                    "type": "font"
+                },
+                {
+                    "file": "images/ShotCounter.png",
+                    "menuIcon": true,
+                    "name": "APP_ICON",
+                    "storageFormat": "png",
+                    "targetPlatforms": null,
+                    "type": "bitmap"
+                }
+            ]
+        },
+        "sdkVersion": "3",
+        "targetPlatforms": [
+            "emery"
+        ],
+        "uuid": "d8200f68-7c8c-4f9e-99e5-950e3eb1a052",
+        "watchapp": {
+            "watchface": false
+        }
+    },
+    "version": "1.0.1"
+}
