@@ -1,6 +1,19 @@
 #include <pebble.h>
 
 #define RING_SIZE 256
+#define MIN(a, b) \
+    ({ __typeof__ (a) _a = (a); \
+       __typeof__ (b) _b = (b); \
+       _a < _b ? _a : _b; })
+#define MAX(a, b) \
+    ({ __typeof__ (a) _a = (a); \
+       __typeof__ (b) _b = (b); \
+       _a > _b ? _a : _b; })
+#define CLAMP(x, low, high) \
+    ({ __typeof__ (x) _x = (x); \
+       __typeof__ (low) _low = (low); \
+       __typeof__ (high) _high = (high); \
+       _x < _low ? _low : (_x > _high ? _high : _x); })
 
 enum {
   PKEY_SHOTS = 1, PKEY_MAG_CAP, PKEY_THRESH, PKEY_ROF_RPS,
@@ -24,14 +37,12 @@ static int64_t s_hold[RING_SIZE];
 static bool s_held;
 static int32_t s_win_peak, s_win_count;
 
-/* Clears the TKEO scope so a counter reset starts with a blank graph. */
 static void clear_scope(void) {
   s_held = false;
   for (int i = 0; i < RING_SIZE; i++) s_ring[i] = 0;
   s_ri = 0;
   layer_mark_dirty(s_scope);
 }
-
 
 /* ---------------- persistence ---------------- */
 static void save_state(void) {
@@ -56,9 +67,8 @@ static void load_state(void) {
 
 /* ---------------- helpers ---------------- */
 static void update_refractory(void) {
-  s_rof_rps = s_rof_rps < 1 ? 1 : (s_rof_rps > 25 ? 25 : s_rof_rps);
-  s_refr_samples = 100 / s_rof_rps;
-  if (s_refr_samples < 2) s_refr_samples = 2;
+  s_rof_rps = CLAMP(s_rof_rps, 1, 25);
+  s_refr_samples = MAX(100 / s_rof_rps, 2);
   s_win_count = 0; s_win_peak = 0;
 }
 
@@ -73,28 +83,30 @@ static inline int64_t tkeo_thresh_of(int32_t s) {
   return 100000LL + (int64_t)s * s * 10000LL;
 }
 
-/* Fixed full-scale energy (top of the scope). Kept constant so that changing
- * the threshold moves only the line, not the waveform itself. Chosen a touch
- * above the max threshold so the line sweeps most of the scope as the setting
- * goes 0..100 while real spikes still have headroom above it. */
 #define SCOPE_MAX 120000000LL
-
-/* Lower bound of the scope (sub-threshold noise clamps to it). The y-axis is
- * log10 over SCOPE_MIN..SCOPE_MAX so spikes and the threshold line sit in a
- * useful range instead of being crushed onto a linear baseline. */
 #define SCOPE_MIN 10000LL
 
-/* Self-contained base-10 log (Pebble firmware has no full libm). */
-static double slog10(uint64_t v) {
-  if (v == 0) return 0.0;
-  double x = (double)v;
-  int e = 0;
-  while (x >= 2.0) { x *= 0.5; e++; }
-  while (x < 1.0)  { x *= 2.0; e--; }
-  double z = (x - 1.0) / (x + 1.0);
-  double z2 = z * z, term = z, sum = z;
-  for (int i = 1; i < 8; i++) { term *= z2; sum += term / (double)(2 * i + 1); }
-  return (2.0 * sum + (double)e * 0.6931471805599453) / 2.302585092994046;
+static float slog10_fast_f32(uint64_t v) {  
+  if (v == 0) return 0.0f;
+  int clz = __builtin_clzll(v);
+  int e = 63 - clz;
+  // Build single-precision IEEE-754 float in [1.0, 2.0)
+  // Shift MSB out, align to 23-bit single-precision mantissa (62 - 22 = 40)
+  uint32_t mantissa = (uint32_t)(((v << clz) & ~(1ULL << 63)) >> 40);
+  uint32_t x_bits = (127U << 23) | mantissa;
+  float x;
+  memcpy(&x, &x_bits, 4);
+  float z = (x - 1.0f) / (x + 1.0f);
+  float w = z * z;
+  // Truncated series for float precision (fewer terms needed for 24-bit mantissa)
+  float poly = 0.11111111f;    // 1/9
+  poly = poly * w + 0.14285714f; // 1/7
+  poly = poly * w + 0.20000000f; // 1/5
+  poly = poly * w + 0.33333333f; // 1/3
+  poly = poly * w + 1.0f;
+  float sum = z * poly;
+   // Precomputed final scaling constants
+  return sum * 0.86858896f + (float)e * 0.30103000f;
 }
 
 static inline int32_t tkeo_axis(int16_t p, int16_t c, int16_t n) {
@@ -119,12 +131,10 @@ static void scope_update(Layer *layer, GContext *ctx) {
   int64_t T = tkeo_thresh_of(s_thresh);
 
   /* Log axis setup (fixed, threshold-independent). */
-  double lmin = slog10(SCOPE_MIN), lmax = slog10(SCOPE_MAX);
+  double lmin = slog10_fast_f32(SCOPE_MIN), lmax = slog10_fast_f32(SCOPE_MAX);
   double lspan = lmax - lmin;
-  double lT = slog10((uint64_t)(T > 0 ? T : 1));
-  double fT = (lT - lmin) / lspan;
-  if (fT < 0.0) fT = 0.0;
-  if (fT > 1.0) fT = 1.0;
+  double lT = slog10_fast_f32((uint64_t)MAX(T, 1));
+  double fT = CLAMP((lT - lmin) / lspan, 0.0, 1.0);
   int lineY = yBot - (int)(fT * (double)diff);
 
   graphics_context_set_fill_color(ctx, get_bg_color());
@@ -140,13 +150,10 @@ static void scope_update(Layer *layer, GContext *ctx) {
   int w = b.size.w - 12;
   for (int i = 0; i < RING_SIZE; i++) {
     int64_t e = dta[(start + i) % RING_SIZE];
-    double le = (e > 0) ? slog10((uint64_t)e) : lmin;
-    if (le < lmin) le = lmin;
-    if (le > lmax) le = lmax;
+    double le = (e > 0) ? slog10_fast_f32((uint64_t)e) : lmin;
+    le = CLAMP(le, lmin, lmax);
     double off = (le - lmin) / lspan;
-    int y = yBot - (int)(off * (double)diff);
-    if (y < yTop) y = yTop;
-    if (y > yBot) y = yBot;
+    int y = CLAMP(yBot - (int)(off * (double)diff), yTop, yBot);
     int x = 6 + (i * w) / (RING_SIZE - 1);
     if (have_prev) {
       graphics_context_set_stroke_color(ctx, get_fg_color());
@@ -215,6 +222,7 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
 }
 
 /* ---------------- acceleration ---------------- */
+// uses Taeger-Kaiser Energy Operator for peak detection
 static void accel_handler(AccelData *data, uint32_t num_samples) {
   int64_t T = tkeo_thresh_of(s_thresh);
 
@@ -241,7 +249,7 @@ static void accel_handler(AccelData *data, uint32_t num_samples) {
     s_ring[s_ri] = e;
     s_ri = (s_ri + 1) % RING_SIZE;
 
-    if (e > s_win_peak) s_win_peak = e;
+    s_win_peak = MAX(s_win_peak, e);
     s_win_count++;
 
     s_prev[0][0] = s_prev[1][0]; s_prev[0][1] = s_prev[1][1]; s_prev[0][2] = s_prev[1][2];
@@ -278,7 +286,7 @@ static void select_long_click(ClickRecognizerRef recognizer, void *context) {
 }
 static void up_click(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer; (void)context;
-  if (s_thresh < 100) { s_thresh = (s_thresh + 5 > 100) ? 100 : s_thresh + 5; update_display(); save_state(); }
+  if (s_thresh < 100) { s_thresh = MIN(s_thresh + 5, 100); update_display(); save_state(); }
 }
 static void up_long_click(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer; (void)context;
@@ -286,7 +294,7 @@ static void up_long_click(ClickRecognizerRef recognizer, void *context) {
 }
 static void down_click(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer; (void)context;
-  if (s_thresh > 0) { s_thresh = (s_thresh - 5 < 0) ? 0 : s_thresh - 5; update_display(); save_state(); }
+  if (s_thresh > 0) { s_thresh = MAX(s_thresh - 5, 0); update_display(); save_state(); }
 }
 static void down_long_click(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer; (void)context;
