@@ -86,7 +86,7 @@ static inline int64_t tkeo_thresh_of(int32_t s) {
 #define SCOPE_MAX 120000000LL
 #define SCOPE_MIN 10000LL
 
-static float slog10_fast_f32(uint64_t v) {  
+static float slog10_fast_f32(uint64_t v) {
   if (v == 0) return 0.0f;
   int clz = __builtin_clzll(v);
   int e = 63 - clz;
