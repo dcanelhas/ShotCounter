@@ -12,10 +12,10 @@ This app uses the accelerometer to measure recoil (as spike in acceleration magn
 - Show Debug Energy Overlay
 
 ## Usage instructions:
-- Short press up or down to change the magazine capacity
-- Long press down to cycle through themes
+- Short press up or down to change the sensitivity threshold
+- Long press up or down to change mag capacity
 - Short press select to reset count
-- Long press select to increase sensitivity threshold by 2g (up to a maximum of 16)
+- Long press select to cycle through color themes
 
 LICENSE covers the use of everything in this repository except for the font,
 which is distributed under the SIL OpenFont License (resources/fonts/LICENSE) 
