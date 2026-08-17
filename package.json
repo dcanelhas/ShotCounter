@@ -14,7 +14,9 @@
             "THEME",
             "SHOW_MAG",
             "ROF_RPS",
-            "DEBUG_MODE"
+            "DEBUG_MODE",
+            "MAG_CAP",
+            "GET_STATE"
         ],
         "projectType": "native",
         "resources": {

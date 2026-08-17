@@ -178,6 +178,21 @@ static void update_display(void) {
 }
 
 /* ---------------- inbox ---------------- */
+/* Send the current watch state back to JS so the config window can
+ * populate its fields instead of resetting to defaults. */
+static void send_state(void) {
+  DictionaryIterator *out;
+  AppMessageResult r = app_message_outbox_begin(&out);
+  if (r != APP_MSG_OK) return;
+  dict_write_int32(out, MESSAGE_KEY_THRESHOLD, s_thresh);
+  dict_write_int32(out, MESSAGE_KEY_THEME, s_theme);
+  dict_write_int32(out, MESSAGE_KEY_SHOW_MAG, s_show_mag ? 1 : 0);
+  dict_write_int32(out, MESSAGE_KEY_ROF_RPS, s_rof_rps);
+  dict_write_int32(out, MESSAGE_KEY_DEBUG_MODE, s_debug_mode ? 1 : 0);
+  dict_write_int32(out, MESSAGE_KEY_MAG_CAP, s_mag_cap);
+  app_message_outbox_send();
+}
+
 static void inbox_received(DictionaryIterator *iter, void *context) {
   (void)context;
   Tuple *t;
@@ -188,10 +203,12 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
   if ((t = dict_find(iter, MESSAGE_KEY_ROF_RPS))) { s_rof_rps = t->value->int32; update_refractory(); }
   if ((t = dict_find(iter, MESSAGE_KEY_THEME))) { s_theme = t->value->int32; }
   if ((t = dict_find(iter, MESSAGE_KEY_SHOW_MAG))) s_show_mag = t->value->int32 != 0;
+  if ((t = dict_find(iter, MESSAGE_KEY_MAG_CAP))) { s_mag_cap = t->value->int32; }
   if ((t = dict_find(iter, MESSAGE_KEY_DEBUG_MODE))) {
     s_debug_mode = t->value->int32 != 0;
     s_held = false;
   }
+  if (dict_find(iter, MESSAGE_KEY_GET_STATE)) { send_state(); return; }
   apply_theme();
   update_display();
   save_state();
