@@ -2,14 +2,17 @@
 
 #define RING_SIZE 256
 
-enum { PKEY_SHOTS = 1, PKEY_MAG_CAP, PKEY_SENS, PKEY_ROF_RPS, PKEY_THEME, PKEY_SHOW_MAG, PKEY_DEBUG_MODE };
+enum {
+  PKEY_SHOTS = 1, PKEY_MAG_CAP, PKEY_THRESH, PKEY_ROF_RPS,
+  PKEY_THEME, PKEY_SHOW_MAG, PKEY_DEBUG_MODE
+};
 
 static Window *s_window;
 static TextLayer *s_shots_lbl, *s_mag_lbl, *s_thresh_lbl;
 static Layer *s_scope;
 static GFont s_font;
 
-static int32_t s_shots, s_mag_cap = 10, s_sens = 50, s_rof_rps = 3, s_refr_samples = 33, s_theme;
+static int32_t s_shots, s_mag_cap = 10, s_thresh = 50, s_rof_rps = 3, s_refr_samples = 33, s_theme;
 static bool s_show_mag = true, s_debug_mode = false;
 static int s_refractory = 50;
 static int16_t s_prev[2][3];
@@ -25,7 +28,7 @@ static int32_t s_win_peak, s_win_count;
 static void save_state(void) {
   persist_write_int(PKEY_SHOTS, s_shots);
   persist_write_int(PKEY_MAG_CAP, s_mag_cap);
-  persist_write_int(PKEY_SENS, s_sens);
+  persist_write_int(PKEY_THRESH, s_thresh);
   persist_write_int(PKEY_ROF_RPS, s_rof_rps);
   persist_write_int(PKEY_THEME, s_theme);
   persist_write_int(PKEY_SHOW_MAG, s_show_mag);
@@ -35,7 +38,7 @@ static void save_state(void) {
 static void load_state(void) {
   if (persist_exists(PKEY_SHOTS)) s_shots = persist_read_int(PKEY_SHOTS);
   if (persist_exists(PKEY_MAG_CAP)) s_mag_cap = persist_read_int(PKEY_MAG_CAP);
-  if (persist_exists(PKEY_SENS)) s_sens = persist_read_int(PKEY_SENS);
+  if (persist_exists(PKEY_THRESH)) s_thresh = persist_read_int(PKEY_THRESH);
   if (persist_exists(PKEY_ROF_RPS)) s_rof_rps = persist_read_int(PKEY_ROF_RPS);
   if (persist_exists(PKEY_THEME)) s_theme = persist_read_int(PKEY_THEME);
   if (persist_exists(PKEY_SHOW_MAG)) s_show_mag = persist_read_int(PKEY_SHOW_MAG);
@@ -56,8 +59,9 @@ static GColor get_fg_color(void) {
   return colors[s_theme % 5];
 }
 
+/* Threshold rises with the setting; a higher threshold means less detection. */
 static inline int64_t tkeo_thresh_of(int32_t s) {
-  return 100000LL + (int64_t)(100 - s) * (100 - s) * 10000LL;
+  return 100000LL + (int64_t)s * s * 10000LL;
 }
 
 static inline int32_t tkeo_axis(int16_t p, int16_t c, int16_t n) {
@@ -79,9 +83,9 @@ static void scope_update(Layer *layer, GContext *ctx) {
   GRect b = layer_get_bounds(layer);
   int yTop = 26, yBot = b.size.h - 6;
   int diff = yBot - yTop;
-  int64_t T = tkeo_thresh_of(s_sens);
-  /* threshold line at 100-sensitivity: lower sens => line higher up */
-  int lineY = yBot - (int)(((int64_t)(100 - s_sens) * diff) / 100);
+  int64_t T = tkeo_thresh_of(s_thresh);
+  /* higher threshold => line sits higher */
+  int lineY = yBot - (int)(((int64_t)s_thresh * diff) / 100);
 
   graphics_context_set_fill_color(ctx, get_bg_color());
   graphics_fill_rect(ctx, b, 0, GCornerNone);
@@ -109,11 +113,9 @@ static void scope_update(Layer *layer, GContext *ctx) {
     have_prev = true;
   }
 
-  /* threshold line */
+  /* threshold line (single, thin pixel) */
   graphics_context_set_stroke_color(ctx, get_fg_color());
-  for (int dy = -2; dy <= 2; dy++) {
-    graphics_draw_line(ctx, (GPoint){ 4, lineY + dy }, (GPoint){ b.size.w - 4, lineY + dy });
-  }
+  graphics_draw_line(ctx, (GPoint){ 4, lineY }, (GPoint){ b.size.w - 4, lineY });
 }
 
 /* ---------------- display ---------------- */
@@ -126,7 +128,7 @@ static void update_display(void) {
   text_layer_set_text(s_mag_lbl, b_mag);
   layer_set_hidden(text_layer_get_layer(s_mag_lbl), !s_show_mag);
 
-  snprintf(b_thresh, sizeof(b_thresh), "Sens: %d | %d RPS", (int)s_sens, (int)s_rof_rps);
+  snprintf(b_thresh, sizeof(b_thresh), "Thr: %d | %d RPS", (int)s_thresh, (int)s_rof_rps);
   text_layer_set_text(s_thresh_lbl, b_thresh);
 
   layer_mark_dirty(s_scope);
@@ -134,10 +136,11 @@ static void update_display(void) {
 
 /* ---------------- inbox ---------------- */
 static void inbox_received(DictionaryIterator *iter, void *context) {
+  (void)context;
   Tuple *t;
-  if ((t = dict_find(iter, MESSAGE_KEY_SENSITIVITY))) {
+  if ((t = dict_find(iter, MESSAGE_KEY_THRESHOLD))) {
     int32_t v = t->value->int32;
-    s_sens = (v >= 0 && v <= 100) ? v : 100 - ((v - 2000) * 100 / 14000);
+    s_thresh = (v >= 0 && v <= 100) ? v : 100 - ((v - 2000) * 100 / 14000);
   }
   if ((t = dict_find(iter, MESSAGE_KEY_ROF_RPS))) { s_rof_rps = t->value->int32; update_refractory(); }
   if ((t = dict_find(iter, MESSAGE_KEY_THEME))) { s_theme = t->value->int32; }
@@ -153,7 +156,7 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
 
 /* ---------------- acceleration ---------------- */
 static void accel_handler(AccelData *data, uint32_t num_samples) {
-  int64_t T = tkeo_thresh_of(s_sens);
+  int64_t T = tkeo_thresh_of(s_thresh);
 
   for (uint32_t i = 0; i < num_samples; i++) {
     if (s_refractory > 0) {
@@ -185,8 +188,7 @@ static void accel_handler(AccelData *data, uint32_t num_samples) {
     s_prev[1][0] = data[i].x; s_prev[1][1] = data[i].y; s_prev[1][2] = data[i].z;
 
     if (s_win_count >= s_refr_samples) {
-      int64_t lo = T * 4 / 5, hi = T * 6 / 5;
-      if (s_win_peak >= lo && s_win_peak <= hi) {
+      if (s_win_peak > T * 3 / 5) {
         int src = s_ri;
         for (int k = 0; k < RING_SIZE; k++) s_hold[k] = s_ring[(src + k) % RING_SIZE];
         s_held = true;
@@ -206,18 +208,33 @@ static void accel_handler(AccelData *data, uint32_t num_samples) {
 }
 
 /* ---------------- buttons ---------------- */
-static void select_click(ClickRecognizerRef r, void *c) { s_shots = 0; persist_write_int(PKEY_SHOTS, 0); update_display(); }
-static void select_long_click(ClickRecognizerRef r, void *c) { s_theme = (s_theme + 1) % 5; apply_theme(); save_state(); }
-static void up_click(ClickRecognizerRef r, void *c) {
-  if (s_sens < 100) { s_sens = (s_sens + 5 > 100) ? 100 : s_sens + 5; s_held = false; update_display(); save_state(); }
+static void select_click(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer; (void)context;
+  s_shots = 0; persist_write_int(PKEY_SHOTS, 0); update_display();
 }
-static void up_long_click(ClickRecognizerRef r, void *c) { if (s_mag_cap < 99) { s_mag_cap++; update_display(); save_state(); } }
-static void down_click(ClickRecognizerRef r, void *c) {
-  if (s_sens > 0) { s_sens = (s_sens - 5 < 0) ? 0 : s_sens - 5; s_held = false; update_display(); save_state(); }
+static void select_long_click(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer; (void)context;
+  s_theme = (s_theme + 1) % 5; apply_theme(); save_state();
 }
-static void down_long_click(ClickRecognizerRef r, void *c) { if (s_mag_cap > 1) { s_mag_cap--; update_display(); save_state(); } }
+static void up_click(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer; (void)context;
+  if (s_thresh < 100) { s_thresh = (s_thresh + 5 > 100) ? 100 : s_thresh + 5; update_display(); save_state(); }
+}
+static void up_long_click(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer; (void)context;
+  if (s_mag_cap < 99) { s_mag_cap++; update_display(); save_state(); }
+}
+static void down_click(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer; (void)context;
+  if (s_thresh > 0) { s_thresh = (s_thresh - 5 < 0) ? 0 : s_thresh - 5; update_display(); save_state(); }
+}
+static void down_long_click(ClickRecognizerRef recognizer, void *context) {
+  (void)recognizer; (void)context;
+  if (s_mag_cap > 1) { s_mag_cap--; update_display(); save_state(); }
+}
 
 static void config_provider(void *context) {
+  (void)context;
   window_single_click_subscribe(BUTTON_ID_SELECT, select_click);
   window_long_click_subscribe(BUTTON_ID_SELECT, 500, select_long_click, NULL);
   window_single_click_subscribe(BUTTON_ID_UP, up_click);
@@ -238,7 +255,8 @@ static TextLayer* create_label(GRect frame, GFont font) {
 }
 
 static void window_load(Window *window) {
-  GRect b = layer_get_bounds(window_get_root_layer(window));
+  (void)window;
+  GRect b = layer_get_bounds(window_get_root_layer(s_window));
   s_font = fonts_load_custom_font(resource_get_handle(RESOURCE_ID_FONT_HUGE_NUMBERS_72));
   if (!s_font) s_font = fonts_get_system_font(FONT_KEY_LECO_42_NUMBERS);
 
@@ -248,7 +266,7 @@ static void window_load(Window *window) {
 
   s_scope = layer_create(GRect(0, 92, b.size.w, b.size.h - 92 - 56));
   layer_set_update_proc(s_scope, scope_update);
-  layer_add_child(window_get_root_layer(window), s_scope);
+  layer_add_child(window_get_root_layer(s_window), s_scope);
 
   update_refractory();
   apply_theme();
@@ -256,6 +274,7 @@ static void window_load(Window *window) {
 }
 
 static void window_unload(Window *window) {
+  (void)window;
   if (s_font) fonts_unload_custom_font(s_font);
   text_layer_destroy(s_shots_lbl);
   text_layer_destroy(s_mag_lbl);

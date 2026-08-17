@@ -10,7 +10,7 @@
         "displayName": "Shot & Recoil Counter",
         "enableMultiJS": true,
         "messageKeys": [
-            "SENSITIVITY",
+            "THRESHOLD",
             "THEME",
             "SHOW_MAG",
             "ROF_RPS",
