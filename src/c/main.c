@@ -24,6 +24,15 @@ static int64_t s_hold[RING_SIZE];
 static bool s_held;
 static int32_t s_win_peak, s_win_count;
 
+/* Clears the TKEO scope so a counter reset starts with a blank graph. */
+static void clear_scope(void) {
+  s_held = false;
+  for (int i = 0; i < RING_SIZE; i++) s_ring[i] = 0;
+  s_ri = 0;
+  layer_mark_dirty(s_scope);
+}
+
+
 /* ---------------- persistence ---------------- */
 static void save_state(void) {
   persist_write_int(PKEY_SHOTS, s_shots);
@@ -210,7 +219,7 @@ static void accel_handler(AccelData *data, uint32_t num_samples) {
 /* ---------------- buttons ---------------- */
 static void select_click(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer; (void)context;
-  s_shots = 0; persist_write_int(PKEY_SHOTS, 0); update_display();
+  s_shots = 0; persist_write_int(PKEY_SHOTS, 0); clear_scope(); update_display();
 }
 static void select_long_click(ClickRecognizerRef recognizer, void *context) {
   (void)recognizer; (void)context;
