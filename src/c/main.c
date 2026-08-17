@@ -79,6 +79,24 @@ static inline int64_t tkeo_thresh_of(int32_t s) {
  * goes 0..100 while real spikes still have headroom above it. */
 #define SCOPE_MAX 120000000LL
 
+/* Lower bound of the scope (sub-threshold noise clamps to it). The y-axis is
+ * log10 over SCOPE_MIN..SCOPE_MAX so spikes and the threshold line sit in a
+ * useful range instead of being crushed onto a linear baseline. */
+#define SCOPE_MIN 10000LL
+
+/* Self-contained base-10 log (Pebble firmware has no full libm). */
+static double slog10(uint64_t v) {
+  if (v == 0) return 0.0;
+  double x = (double)v;
+  int e = 0;
+  while (x >= 2.0) { x *= 0.5; e++; }
+  while (x < 1.0)  { x *= 2.0; e--; }
+  double z = (x - 1.0) / (x + 1.0);
+  double z2 = z * z, term = z, sum = z;
+  for (int i = 1; i < 8; i++) { term *= z2; sum += term / (double)(2 * i + 1); }
+  return (2.0 * sum + (double)e * 0.6931471805599453) / 2.302585092994046;
+}
+
 static inline int32_t tkeo_axis(int16_t p, int16_t c, int16_t n) {
   return ((int32_t)c * c) - ((int32_t)p * n);
 }
@@ -100,11 +118,14 @@ static void scope_update(Layer *layer, GContext *ctx) {
   int diff = yBot - yTop;
   int64_t T = tkeo_thresh_of(s_thresh);
 
-  /* Waveform is drawn on a fixed absolute scale (0 .. SCOPE_MAX) so it stays
-   * put when the threshold changes; only the threshold line moves. */
-  int lineY = yBot - (int)(((double)T / (double)SCOPE_MAX) * (double)diff);
-  if (lineY < yTop) lineY = yTop;
-  if (lineY > yBot) lineY = yBot;
+  /* Log axis setup (fixed, threshold-independent). */
+  double lmin = slog10(SCOPE_MIN), lmax = slog10(SCOPE_MAX);
+  double lspan = lmax - lmin;
+  double lT = slog10((uint64_t)(T > 0 ? T : 1));
+  double fT = (lT - lmin) / lspan;
+  if (fT < 0.0) fT = 0.0;
+  if (fT > 1.0) fT = 1.0;
+  int lineY = yBot - (int)(fT * (double)diff);
 
   graphics_context_set_fill_color(ctx, get_bg_color());
   graphics_fill_rect(ctx, b, 0, GCornerNone);
@@ -119,7 +140,10 @@ static void scope_update(Layer *layer, GContext *ctx) {
   int w = b.size.w - 12;
   for (int i = 0; i < RING_SIZE; i++) {
     int64_t e = dta[(start + i) % RING_SIZE];
-    double off = (double)e / (double)SCOPE_MAX;
+    double le = (e > 0) ? slog10((uint64_t)e) : lmin;
+    if (le < lmin) le = lmin;
+    if (le > lmax) le = lmax;
+    double off = (le - lmin) / lspan;
     int y = yBot - (int)(off * (double)diff);
     if (y < yTop) y = yTop;
     if (y > yBot) y = yBot;
