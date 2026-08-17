@@ -10,10 +10,13 @@
         "displayName": "Shot & Recoil Counter",
         "enableMultiJS": true,
         "messageKeys": [
-            "THRESHOLD_MG",
+            "THRESHOLD",
             "THEME",
             "SHOW_MAG",
-            "ROF_RPS"
+            "ROF_RPS",
+            "DEBUG_MODE",
+            "MAG_CAP",
+            "GET_STATE"
         ],
         "projectType": "native",
         "resources": {
