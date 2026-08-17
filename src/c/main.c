@@ -90,7 +90,7 @@ static void debug_layer_update_proc(Layer *layer, GContext *ctx) {
 
 static void inbox_received(DictionaryIterator *iter, void *context) {
   Tuple *t;
-  if ((t = dict_find(iter, MESSAGE_KEY_THRESHOLD_MG))) {
+  if ((t = dict_find(iter, MESSAGE_KEY_SENSITIVITY))) {
     int32_t val = t->value->int32;
     s_sens = (val >= 0 && val <= 100) ? val : 100 - ((val - 2000) * 100 / 14000);
   }
