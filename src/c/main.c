@@ -73,6 +73,12 @@ static inline int64_t tkeo_thresh_of(int32_t s) {
   return 100000LL + (int64_t)s * s * 10000LL;
 }
 
+/* Fixed full-scale energy (top of the scope). Kept constant so that changing
+ * the threshold moves only the line, not the waveform itself. Chosen a touch
+ * above the max threshold so the line sweeps most of the scope as the setting
+ * goes 0..100 while real spikes still have headroom above it. */
+#define SCOPE_MAX 120000000LL
+
 static inline int32_t tkeo_axis(int16_t p, int16_t c, int16_t n) {
   return ((int32_t)c * c) - ((int32_t)p * n);
 }
@@ -93,8 +99,12 @@ static void scope_update(Layer *layer, GContext *ctx) {
   int yTop = 26, yBot = b.size.h - 6;
   int diff = yBot - yTop;
   int64_t T = tkeo_thresh_of(s_thresh);
-  /* higher threshold => line sits higher */
-  int lineY = yBot - (int)(((int64_t)s_thresh * diff) / 100);
+
+  /* Waveform is drawn on a fixed absolute scale (0 .. SCOPE_MAX) so it stays
+   * put when the threshold changes; only the threshold line moves. */
+  int lineY = yBot - (int)(((double)T / (double)SCOPE_MAX) * (double)diff);
+  if (lineY < yTop) lineY = yTop;
+  if (lineY > yBot) lineY = yBot;
 
   graphics_context_set_fill_color(ctx, get_bg_color());
   graphics_fill_rect(ctx, b, 0, GCornerNone);
@@ -109,8 +119,8 @@ static void scope_update(Layer *layer, GContext *ctx) {
   int w = b.size.w - 12;
   for (int i = 0; i < RING_SIZE; i++) {
     int64_t e = dta[(start + i) % RING_SIZE];
-    double off = (double)(e - T) / (double)T;
-    int y = lineY - (int)(off * 70.0);
+    double off = (double)e / (double)SCOPE_MAX;
+    int y = yBot - (int)(off * (double)diff);
     if (y < yTop) y = yTop;
     if (y > yBot) y = yBot;
     int x = 6 + (i * w) / (RING_SIZE - 1);
