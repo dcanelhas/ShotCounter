@@ -13,6 +13,29 @@ static bool s_has_prev;
 static int32_t s_peak_x, s_peak_y, s_peak_z, s_window_samples;
 static int32_t s_disp_x, s_disp_y, s_disp_z;
 
+// --- Persisted state -------------------------------------------------------
+enum { PKEY_SHOTS = 1, PKEY_MAG_CAP, PKEY_SENS, PKEY_ROF_RPS, PKEY_THEME, PKEY_SHOW_MAG, PKEY_DEBUG_MODE };
+
+static void save_state(void) {
+  persist_write_int(PKEY_SHOTS, s_shots);
+  persist_write_int(PKEY_MAG_CAP, s_mag_cap);
+  persist_write_int(PKEY_SENS, s_sens);
+  persist_write_int(PKEY_ROF_RPS, s_rof_rps);
+  persist_write_int(PKEY_THEME, s_theme);
+  persist_write_int(PKEY_SHOW_MAG, s_show_mag);
+  persist_write_int(PKEY_DEBUG_MODE, s_debug_mode);
+}
+
+static void load_state(void) {
+  if (persist_exists(PKEY_SHOTS)) s_shots = persist_read_int(PKEY_SHOTS);
+  if (persist_exists(PKEY_MAG_CAP)) s_mag_cap = persist_read_int(PKEY_MAG_CAP);
+  if (persist_exists(PKEY_SENS)) s_sens = persist_read_int(PKEY_SENS);
+  if (persist_exists(PKEY_ROF_RPS)) s_rof_rps = persist_read_int(PKEY_ROF_RPS);
+  if (persist_exists(PKEY_THEME)) s_theme = persist_read_int(PKEY_THEME);
+  if (persist_exists(PKEY_SHOW_MAG)) s_show_mag = persist_read_int(PKEY_SHOW_MAG);
+  if (persist_exists(PKEY_DEBUG_MODE)) s_debug_mode = persist_read_int(PKEY_DEBUG_MODE);
+}
+
 static void update_refractory(void) {
   s_rof_rps = s_rof_rps < 1 ? 1 : (s_rof_rps > 25 ? 25 : s_rof_rps);
   s_refractory_samples = 100 / s_rof_rps;
@@ -104,6 +127,7 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
 
   apply_theme();
   update_display();
+  save_state();
 }
 
 static inline int32_t tkeo_axis(int16_t prev, int16_t curr, int16_t next) {
@@ -152,6 +176,7 @@ static void accel_handler(AccelData *data, uint32_t num_samples) {
 
     if (total_energy >= tkeo_thresh) {
       s_shots++;
+      persist_write_int(PKEY_SHOTS, s_shots);
       s_refractory = s_refractory_samples;
       update_display();
       break;
@@ -159,12 +184,12 @@ static void accel_handler(AccelData *data, uint32_t num_samples) {
   }
 }
 
-static void select_click(ClickRecognizerRef r, void *c) { s_shots = 0; update_display(); }
-static void select_long_click(ClickRecognizerRef r, void *c) { s_theme = (s_theme + 1) % 5; apply_theme(); }
-static void up_click(ClickRecognizerRef r, void *c) { if (s_sens < 100) { s_sens = (s_sens + 5 > 100) ? 100 : s_sens + 5; update_display(); } }
-static void up_long_click(ClickRecognizerRef r, void *c) { if (s_mag_cap < 99) { s_mag_cap++; update_display(); } }
-static void down_click(ClickRecognizerRef r, void *c) { if (s_sens > 0) { s_sens = (s_sens - 5 < 0) ? 0 : s_sens - 5; update_display(); } }
-static void down_long_click(ClickRecognizerRef r, void *c) { if (s_mag_cap > 1) { s_mag_cap--; update_display(); } }
+static void select_click(ClickRecognizerRef r, void *c) { s_shots = 0; persist_write_int(PKEY_SHOTS, 0); update_display(); }
+static void select_long_click(ClickRecognizerRef r, void *c) { s_theme = (s_theme + 1) % 5; apply_theme(); save_state(); }
+static void up_click(ClickRecognizerRef r, void *c) { if (s_sens < 100) { s_sens = (s_sens + 5 > 100) ? 100 : s_sens + 5; update_display(); save_state(); } }
+static void up_long_click(ClickRecognizerRef r, void *c) { if (s_mag_cap < 99) { s_mag_cap++; update_display(); save_state(); } }
+static void down_click(ClickRecognizerRef r, void *c) { if (s_sens > 0) { s_sens = (s_sens - 5 < 0) ? 0 : s_sens - 5; update_display(); save_state(); } }
+static void down_long_click(ClickRecognizerRef r, void *c) { if (s_mag_cap > 1) { s_mag_cap--; update_display(); save_state(); } }
 
 static void config_provider(void *context) {
   window_single_click_subscribe(BUTTON_ID_SELECT, select_click);
@@ -211,6 +236,7 @@ static void window_unload(Window *window) {
 }
 
 static void init(void) {
+  load_state();
   s_window = window_create();
   window_set_click_config_provider(s_window, config_provider);
   window_set_window_handlers(s_window, (WindowHandlers){ .load = window_load, .unload = window_unload });
