@@ -1,12 +1,6 @@
 #include <pebble.h>
 
 #define RING_SIZE 256
-
-/* Energy: accel batch size. 25 samples at 100 Hz = 4 wakeups/s vs 10 Hz with
- * 10-sample batches. Pebble SDK caps batches at 30; do not use 50. Tradeoff:
- * detection latency becomes the batch duration (~250 ms worst case), which
- * caps the resolvable rate of fire. Drop to 10 for tighter ROF resolution. */
-#define ACCEL_BATCH 25
 #define MIN(a, b) \
     ({ __typeof__ (a) _a = (a); \
        __typeof__ (b) _b = (b); \
@@ -61,8 +55,7 @@ static void save_state(void) {
   persist_write_int(PKEY_DEBUG_MODE, s_debug_mode);
 }
 
-/* Energy: don't write flash on every shot. Persist a running copy at most
- * every 4 shots; deinit() does a full save when the app exits cleanly. */
+/* Persist a running copy every 4 shots; deinit() saves the final count. */
 static void maybe_persist_shots(void) {
   if ((s_shots % 4) == 0) persist_write_int(PKEY_SHOTS, s_shots);
 }
@@ -142,9 +135,7 @@ static void scope_update(Layer *layer, GContext *ctx) {
   int diff = yBot - yTop;
   int64_t T = tkeo_thresh_of(s_thresh);
 
-  /* Log axis setup (fixed, threshold-independent). Stays in float32: the
-   * Cortex-M4F FPU is single-precision, and double would call soft-float
-   * libcalls (__aeabi_ddiv etc.) on every sample. */
+  /* Log axis setup (fixed, threshold-independent). */
   float lmin = slog10_fast_f32(SCOPE_MIN), lmax = slog10_fast_f32(SCOPE_MAX);
   float lspan = lmax - lmin;
   float lT = slog10_fast_f32((uint64_t)MAX(T, 1));
@@ -195,8 +186,6 @@ static void update_display(void) {
   snprintf(b_thresh, sizeof(b_thresh), "Thr: %d | %d RPS", (int)s_thresh, (int)s_rof_rps);
   text_layer_set_text(s_thresh_lbl, b_thresh);
 
-  /* Energy: only repaint the scope when debug mode is active; otherwise the
-   * layer just paints the background. */
   if (s_debug_mode) layer_mark_dirty(s_scope);
 }
 
@@ -286,7 +275,6 @@ static void accel_handler(AccelData *data, uint32_t num_samples) {
         int src = s_ri;
         for (int k = 0; k < RING_SIZE; k++) s_hold[k] = s_ring[(src + k) % RING_SIZE];
         s_held = true;
-        /* Energy: only repaint when the scope is actually shown. */
         if (s_debug_mode) layer_mark_dirty(s_scope);
       }
       s_win_peak = 0; s_win_count = 0;
@@ -385,12 +373,12 @@ static void init(void) {
   app_message_register_inbox_received(inbox_received);
   app_message_open(128, 128);
   window_stack_push(s_window, true);
-  accel_data_service_subscribe(ACCEL_BATCH, accel_handler);
+  accel_data_service_subscribe(10, accel_handler);
   accel_service_set_sampling_rate(ACCEL_SAMPLING_100HZ);
 }
 
 static void deinit(void) {
-  save_state();  /* Full persist on clean exit (energy: not per-shot). */
+  save_state();
   accel_data_service_unsubscribe();
   window_destroy(s_window);
 }
