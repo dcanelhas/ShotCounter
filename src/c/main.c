@@ -45,8 +45,12 @@ static void clear_scope(void) {
 }
 
 /* ---------------- persistence ---------------- */
+static time_t s_last_persist = 0;
+static int32_t s_last_saved_shots = 0;
+
 static void save_state(void) {
   persist_write_int(PKEY_SHOTS, s_shots);
+  s_last_saved_shots = s_shots;
   persist_write_int(PKEY_MAG_CAP, s_mag_cap);
   persist_write_int(PKEY_THRESH, s_thresh);
   persist_write_int(PKEY_ROF_RPS, s_rof_rps);
@@ -55,8 +59,19 @@ static void save_state(void) {
   persist_write_int(PKEY_DEBUG_MODE, s_debug_mode);
 }
 
+/* Persist the shot count once at least 10s have passed AND shots happened
+ * since the last save. deinit() saves unconditionally on exit. */
+static void maybe_persist_shots(void) {
+  time_t now = time(NULL);
+  if (now - s_last_persist >= 10 && s_shots != s_last_saved_shots) {
+    persist_write_int(PKEY_SHOTS, s_shots);
+    s_last_persist = now;
+    s_last_saved_shots = s_shots;
+  }
+}
+
 static void load_state(void) {
-  if (persist_exists(PKEY_SHOTS)) s_shots = persist_read_int(PKEY_SHOTS);
+  if (persist_exists(PKEY_SHOTS)) { s_shots = persist_read_int(PKEY_SHOTS); s_last_saved_shots = s_shots; }
   if (persist_exists(PKEY_MAG_CAP)) s_mag_cap = persist_read_int(PKEY_MAG_CAP);
   if (persist_exists(PKEY_THRESH)) s_thresh = persist_read_int(PKEY_THRESH);
   if (persist_exists(PKEY_ROF_RPS)) s_rof_rps = persist_read_int(PKEY_ROF_RPS);
@@ -131,11 +146,11 @@ static void scope_update(Layer *layer, GContext *ctx) {
   int64_t T = tkeo_thresh_of(s_thresh);
 
   /* Log axis setup (fixed, threshold-independent). */
-  double lmin = slog10_fast_f32(SCOPE_MIN), lmax = slog10_fast_f32(SCOPE_MAX);
-  double lspan = lmax - lmin;
-  double lT = slog10_fast_f32((uint64_t)MAX(T, 1));
-  double fT = CLAMP((lT - lmin) / lspan, 0.0, 1.0);
-  int lineY = yBot - (int)(fT * (double)diff);
+  float lmin = slog10_fast_f32(SCOPE_MIN), lmax = slog10_fast_f32(SCOPE_MAX);
+  float lspan = lmax - lmin;
+  float lT = slog10_fast_f32((uint64_t)MAX(T, 1));
+  float fT = CLAMP((lT - lmin) / lspan, 0.0f, 1.0f);
+  int lineY = yBot - (int)(fT * (float)diff);
 
   graphics_context_set_fill_color(ctx, get_bg_color());
   graphics_fill_rect(ctx, b, 0, GCornerNone);
@@ -150,10 +165,10 @@ static void scope_update(Layer *layer, GContext *ctx) {
   int w = b.size.w - 12;
   for (int i = 0; i < RING_SIZE; i++) {
     int64_t e = dta[(start + i) % RING_SIZE];
-    double le = (e > 0) ? slog10_fast_f32((uint64_t)e) : lmin;
+    float le = (e > 0) ? slog10_fast_f32((uint64_t)e) : lmin;
     le = CLAMP(le, lmin, lmax);
-    double off = (le - lmin) / lspan;
-    int y = CLAMP(yBot - (int)(off * (double)diff), yTop, yBot);
+    float off = (le - lmin) / lspan;
+    int y = CLAMP(yBot - (int)(off * (float)diff), yTop, yBot);
     int x = 6 + (i * w) / (RING_SIZE - 1);
     if (have_prev) {
       graphics_context_set_stroke_color(ctx, get_fg_color());
@@ -181,7 +196,7 @@ static void update_display(void) {
   snprintf(b_thresh, sizeof(b_thresh), "Thr: %d | %d RPS", (int)s_thresh, (int)s_rof_rps);
   text_layer_set_text(s_thresh_lbl, b_thresh);
 
-  layer_mark_dirty(s_scope);
+  if (s_debug_mode) layer_mark_dirty(s_scope);
 }
 
 /* ---------------- inbox ---------------- */
@@ -227,10 +242,19 @@ static void accel_handler(AccelData *data, uint32_t num_samples) {
   int64_t T = tkeo_thresh_of(s_thresh);
 
   for (uint32_t i = 0; i < num_samples; i++) {
+    /* Fast-forward the refractory window in one jump. */
     if (s_refractory > 0) {
-      s_refractory--;
-      s_prev[0][0] = s_prev[1][0]; s_prev[0][1] = s_prev[1][1]; s_prev[0][2] = s_prev[1][2];
-      s_prev[1][0] = data[i].x; s_prev[1][1] = data[i].y; s_prev[1][2] = data[i].z;
+      uint32_t skip = MIN((uint32_t)s_refractory, num_samples - i);
+      s_refractory -= (int)skip;
+      uint32_t last = i + skip - 1;
+      if (skip == 1) {
+        s_prev[0][0] = s_prev[1][0]; s_prev[0][1] = s_prev[1][1]; s_prev[0][2] = s_prev[1][2];
+        s_prev[1][0] = data[last].x; s_prev[1][1] = data[last].y; s_prev[1][2] = data[last].z;
+      } else {
+        s_prev[0][0] = data[last - 1].x; s_prev[0][1] = data[last - 1].y; s_prev[0][2] = data[last - 1].z;
+        s_prev[1][0] = data[last].x;     s_prev[1][1] = data[last].y;     s_prev[1][2] = data[last].z;
+      }
+      i = last;
       continue;
     }
 
@@ -260,14 +284,14 @@ static void accel_handler(AccelData *data, uint32_t num_samples) {
         int src = s_ri;
         for (int k = 0; k < RING_SIZE; k++) s_hold[k] = s_ring[(src + k) % RING_SIZE];
         s_held = true;
-        layer_mark_dirty(s_scope);
+        if (s_debug_mode) layer_mark_dirty(s_scope);
       }
       s_win_peak = 0; s_win_count = 0;
     }
 
     if (e >= T) {
       s_shots++;
-      persist_write_int(PKEY_SHOTS, s_shots);
+      maybe_persist_shots();
       s_refractory = s_refr_samples;
       update_display();
       break;
@@ -363,6 +387,7 @@ static void init(void) {
 }
 
 static void deinit(void) {
+  save_state();
   accel_data_service_unsubscribe();
   window_destroy(s_window);
 }
