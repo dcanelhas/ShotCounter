@@ -45,8 +45,12 @@ static void clear_scope(void) {
 }
 
 /* ---------------- persistence ---------------- */
+static time_t s_last_persist = 0;
+static int32_t s_last_saved_shots = 0;
+
 static void save_state(void) {
   persist_write_int(PKEY_SHOTS, s_shots);
+  s_last_saved_shots = s_shots;
   persist_write_int(PKEY_MAG_CAP, s_mag_cap);
   persist_write_int(PKEY_THRESH, s_thresh);
   persist_write_int(PKEY_ROF_RPS, s_rof_rps);
@@ -55,13 +59,19 @@ static void save_state(void) {
   persist_write_int(PKEY_DEBUG_MODE, s_debug_mode);
 }
 
-/* Persist a running copy every 4 shots; deinit() saves the final count. */
+/* Persist the shot count once at least 10s have passed AND shots happened
+ * since the last save. deinit() saves unconditionally on exit. */
 static void maybe_persist_shots(void) {
-  if ((s_shots % 4) == 0) persist_write_int(PKEY_SHOTS, s_shots);
+  time_t now = time(NULL);
+  if (now - s_last_persist >= 10 && s_shots != s_last_saved_shots) {
+    persist_write_int(PKEY_SHOTS, s_shots);
+    s_last_persist = now;
+    s_last_saved_shots = s_shots;
+  }
 }
 
 static void load_state(void) {
-  if (persist_exists(PKEY_SHOTS)) s_shots = persist_read_int(PKEY_SHOTS);
+  if (persist_exists(PKEY_SHOTS)) { s_shots = persist_read_int(PKEY_SHOTS); s_last_saved_shots = s_shots; }
   if (persist_exists(PKEY_MAG_CAP)) s_mag_cap = persist_read_int(PKEY_MAG_CAP);
   if (persist_exists(PKEY_THRESH)) s_thresh = persist_read_int(PKEY_THRESH);
   if (persist_exists(PKEY_ROF_RPS)) s_rof_rps = persist_read_int(PKEY_ROF_RPS);
@@ -232,8 +242,7 @@ static void accel_handler(AccelData *data, uint32_t num_samples) {
   int64_t T = tkeo_thresh_of(s_thresh);
 
   for (uint32_t i = 0; i < num_samples; i++) {
-    /* Fast-forward the refractory window in one jump, keeping the two-sample
-     * TKO predecessor synced from the last skipped samples. */
+    /* Fast-forward the refractory window in one jump. */
     if (s_refractory > 0) {
       uint32_t skip = MIN((uint32_t)s_refractory, num_samples - i);
       s_refractory -= (int)skip;
