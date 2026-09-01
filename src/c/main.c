@@ -91,11 +91,11 @@ static void update_refractory(void) {
 static inline int32_t mexican_hat_axis(int axis) {
     // Kernel: [-1, -2, 6, -2, -1]
     int32_t val = 
-        (-2 * s_hist[0][axis]) + 
-        (-4 * s_hist[1][axis]) + 
-        ( 12 * s_hist[2][axis]) + 
-        (-4 * s_hist[3][axis]) + 
-        (-2 * s_hist[4][axis]);
+        (-1 * s_hist[0][axis]) + 
+        (-2 * s_hist[1][axis]) + 
+        ( 6 * s_hist[2][axis]) + 
+        (-2 * s_hist[3][axis]) + 
+        (-1 * s_hist[4][axis]);
     return (val * val) >> 4; 
 }
 
