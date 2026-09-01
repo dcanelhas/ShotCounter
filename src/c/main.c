@@ -266,7 +266,6 @@ static void accel_handler(AccelData *data, uint32_t num_samples) {
     int32_t tz = mexican_hat_axis(2);
     
     int32_t e = tx + ty + tz;
-    int32_t e = tx + ty + tz;
 
     s_prev[0][0] = s_prev[1][0]; s_prev[0][1] = s_prev[1][1]; s_prev[0][2] = s_prev[1][2];
     s_prev[1][0] = data[i].x; s_prev[1][1] = data[i].y; s_prev[1][2] = data[i].z;
