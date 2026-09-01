@@ -30,7 +30,6 @@ static bool s_show_mag = true, s_debug_mode = false;
 static int s_refractory = 50;
 static int16_t s_hist[5][3];
 static int s_hist_count = 0;
-static bool s_has_prev;
 
 static int32_t s_ring[RING_SIZE];
 static int32_t s_ri;
