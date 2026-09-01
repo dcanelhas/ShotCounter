@@ -31,15 +31,15 @@ static int s_refractory = 50;
 static int16_t s_prev[2][3];
 static bool s_has_prev;
 
-static int64_t s_ring[RING_SIZE];
+static int32_t s_ring[RING_SIZE];
 static int32_t s_ri;
-static int64_t s_hold[RING_SIZE];
+static int32_t s_hold[RING_SIZE];
 static bool s_held;
 static int32_t s_win_peak, s_win_count;
 
 static void clear_scope(void) {
   s_held = false;
-  for (int i = 0; i < RING_SIZE; i++) s_ring[i] = 0;
+  memset(s_ring, 0, sizeof(s_ring));
   s_ri = 0;
   layer_mark_dirty(s_scope);
 }
@@ -94,34 +94,20 @@ static GColor get_fg_color(void) {
 }
 
 /* Threshold rises with the setting; a higher threshold means less detection. */
-static inline int64_t tkeo_thresh_of(int32_t s) {
-  return 100000LL + (int64_t)s * s * 10000LL;
+static inline int32_t tkeo_thresh_of(int32_t s) {
+  return 100000 + s * s * 10000;
 }
 
-#define SCOPE_MAX 120000000LL
-#define SCOPE_MIN 10000LL
+#define SCOPE_MAX 120000000
+#define SCOPE_MIN 10000
 
-static float slog10_fast_f32(uint64_t v) {
-  if (v == 0) return 0.0f;
-  int clz = __builtin_clzll(v);
-  int e = 63 - clz;
-  // Build single-precision IEEE-754 float in [1.0, 2.0)
-  // Shift MSB out, align to 23-bit single-precision mantissa (62 - 22 = 40)
-  uint32_t mantissa = (uint32_t)(((v << clz) & ~(1ULL << 63)) >> 40);
-  uint32_t x_bits = (127U << 23) | mantissa;
-  float x;
-  memcpy(&x, &x_bits, 4);
-  float z = (x - 1.0f) / (x + 1.0f);
-  float w = z * z;
-  // Truncated series for float precision (fewer terms needed for 24-bit mantissa)
-  float poly = 0.11111111f;    // 1/9
-  poly = poly * w + 0.14285714f; // 1/7
-  poly = poly * w + 0.20000000f; // 1/5
-  poly = poly * w + 0.33333333f; // 1/3
-  poly = poly * w + 1.0f;
-  float sum = z * poly;
-   // Precomputed final scaling constants
-  return sum * 0.86858896f + (float)e * 0.30103000f;
+/* Fast integer log2 approximation via Cortex-M hardware CLZ instruction.
+ * int32_t is sufficient: tx/ty/tz sums stay well under INT32_MAX for real accel input. */
+static inline int32_t ilog2_fast(uint32_t v) {
+  if (v == 0) return 0;
+  uint32_t msb = 31 - __builtin_clz(v);
+  uint32_t frac = (msb >= 4) ? (v >> (msb - 4)) & 0x0F : (v << (4 - msb)) & 0x0F;
+  return (int32_t)((msb << 4) | frac);
 }
 
 static inline int32_t tkeo_axis(int16_t p, int16_t c, int16_t n) {
@@ -143,32 +129,33 @@ static void scope_update(Layer *layer, GContext *ctx) {
   GRect b = layer_get_bounds(layer);
   int yTop = 26, yBot = b.size.h - 6;
   int diff = yBot - yTop;
-  int64_t T = tkeo_thresh_of(s_thresh);
+  int32_t T = tkeo_thresh_of(s_thresh);
 
-  /* Log axis setup (fixed, threshold-independent). */
-  float lmin = slog10_fast_f32(SCOPE_MIN), lmax = slog10_fast_f32(SCOPE_MAX);
-  float lspan = lmax - lmin;
-  float lT = slog10_fast_f32((uint64_t)MAX(T, 1));
-  float fT = CLAMP((lT - lmin) / lspan, 0.0f, 1.0f);
-  int lineY = yBot - (int)(fT * (float)diff);
+  /* Integer log axis setup (fixed, threshold-independent). */
+  int32_t lmin = ilog2_fast(SCOPE_MIN), lmax = ilog2_fast(SCOPE_MAX);
+  int32_t lspan = lmax - lmin;
+  int32_t lT = ilog2_fast(MAX(T, 1));
+  int32_t fT_num = CLAMP(lT - lmin, 0, lspan);
+  int lineY = yBot - (fT_num * diff) / lspan;
 
   graphics_context_set_fill_color(ctx, get_bg_color());
   graphics_fill_rect(ctx, b, 0, GCornerNone);
 
   if (!s_debug_mode) return;
 
-  int64_t *dta = s_held ? s_hold : s_ring;
+  int32_t *dta = s_held ? s_hold : s_ring;
   int start = s_held ? 0 : s_ri;
 
   GPoint prev = { 0, 0 };
   bool have_prev = false;
   int w = b.size.w - 12;
   for (int i = 0; i < RING_SIZE; i++) {
-    int64_t e = dta[(start + i) % RING_SIZE];
-    float le = (e > 0) ? slog10_fast_f32((uint64_t)e) : lmin;
+    // equivalent to (but faster than) modulo, since the array length is a power of 2
+    int32_t e = dta[(start + i) & (RING_SIZE - 1)]; 
+    int32_t le = (e > 0) ? ilog2_fast((uint32_t)e) : lmin;
     le = CLAMP(le, lmin, lmax);
-    float off = (le - lmin) / lspan;
-    int y = CLAMP(yBot - (int)(off * (float)diff), yTop, yBot);
+    int32_t off = le - lmin;
+    int y = CLAMP(yBot - (off * diff) / lspan, yTop, yBot);
     int x = 6 + (i * w) / (RING_SIZE - 1);
     if (have_prev) {
       graphics_context_set_stroke_color(ctx, get_fg_color());
@@ -239,7 +226,7 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
 /* ---------------- acceleration ---------------- */
 // uses Taeger-Kaiser Energy Operator for peak detection
 static void accel_handler(AccelData *data, uint32_t num_samples) {
-  int64_t T = tkeo_thresh_of(s_thresh);
+  int32_t T = tkeo_thresh_of(s_thresh);
 
   for (uint32_t i = 0; i < num_samples; i++) {
     /* Fast-forward the refractory window in one jump. */
@@ -268,25 +255,28 @@ static void accel_handler(AccelData *data, uint32_t num_samples) {
     int32_t tx = tkeo_axis(s_prev[0][0], s_prev[1][0], data[i].x);
     int32_t ty = tkeo_axis(s_prev[0][1], s_prev[1][1], data[i].y);
     int32_t tz = tkeo_axis(s_prev[0][2], s_prev[1][2], data[i].z);
-    int64_t e = (int64_t)tx + ty + tz;
-
-    s_ring[s_ri] = e;
-    s_ri = (s_ri + 1) % RING_SIZE;
-
-    s_win_peak = MAX(s_win_peak, e);
-    s_win_count++;
+    int32_t e = tx + ty + tz;
 
     s_prev[0][0] = s_prev[1][0]; s_prev[0][1] = s_prev[1][1]; s_prev[0][2] = s_prev[1][2];
     s_prev[1][0] = data[i].x; s_prev[1][1] = data[i].y; s_prev[1][2] = data[i].z;
 
-    if (s_win_count >= s_refr_samples) {
-      if (s_win_peak > T * 3 / 5) {
-        int src = s_ri;
-        for (int k = 0; k < RING_SIZE; k++) s_hold[k] = s_ring[(src + k) % RING_SIZE];
-        s_held = true;
-        if (s_debug_mode) layer_mark_dirty(s_scope);
+    /* Only scope_update() reads s_ring/s_hold, and it no-ops when !s_debug_mode, so skip bookkeeping too. */
+    if (s_debug_mode) {
+      s_ring[s_ri] = e;
+      s_ri = (s_ri + 1) & (RING_SIZE - 1);
+      s_win_peak = MAX(s_win_peak, e);
+      s_win_count++;
+      if (s_win_count >= s_refr_samples) {
+        if (s_win_peak > (T * 3) / 5) {
+          int src = s_ri;
+          int tail = RING_SIZE - src;
+          memcpy(s_hold, &s_ring[src], tail * sizeof(int32_t));
+          memcpy(&s_hold[tail], s_ring, src * sizeof(int32_t));
+          s_held = true;
+          layer_mark_dirty(s_scope);
+        }
+        s_win_peak = 0; s_win_count = 0;
       }
-      s_win_peak = 0; s_win_count = 0;
     }
 
     if (e >= T) {
