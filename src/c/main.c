@@ -267,9 +267,6 @@ static void accel_handler(AccelData *data, uint32_t num_samples) {
     
     int32_t e = tx + ty + tz;
 
-    s_prev[0][0] = s_prev[1][0]; s_prev[0][1] = s_prev[1][1]; s_prev[0][2] = s_prev[1][2];
-    s_prev[1][0] = data[i].x; s_prev[1][1] = data[i].y; s_prev[1][2] = data[i].z;
-
     /* Only scope_update() reads s_ring/s_hold, and it no-ops when !s_debug_mode, so skip bookkeeping too. */
     if (s_debug_mode) {
       s_ring[s_ri] = e;
