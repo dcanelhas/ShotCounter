@@ -28,7 +28,8 @@ static GFont s_font;
 static int32_t s_shots, s_mag_cap = 10, s_thresh = 50, s_rof_rps = 3, s_refr_samples = 33, s_theme;
 static bool s_show_mag = true, s_debug_mode = false;
 static int s_refractory = 50;
-static int16_t s_prev[2][3];
+static int16_t s_hist[5][3];
+static int s_hist_count = 0;
 static bool s_has_prev;
 
 static int32_t s_ring[RING_SIZE];
@@ -43,6 +44,7 @@ static void clear_scope(void) {
   s_ri = 0;
   layer_mark_dirty(s_scope);
 }
+
 
 /* ---------------- persistence ---------------- */
 static time_t s_last_persist = 0;
@@ -85,6 +87,17 @@ static void update_refractory(void) {
   s_rof_rps = CLAMP(s_rof_rps, 1, 25);
   s_refr_samples = MAX(100 / s_rof_rps, 2);
   s_win_count = 0; s_win_peak = 0;
+}
+
+static inline int32_t mexican_hat_axis(int axis) {
+    // Kernel: [-1, -2, 6, -2, -1]
+    int32_t val = 
+        (-1 * s_hist[0][axis]) + 
+        (-2 * s_hist[1][axis]) + 
+        ( 6 * s_hist[2][axis]) + 
+        (-2 * s_hist[3][axis]) + 
+        (-1 * s_hist[4][axis]);
+    return (val * val) >> 4; 
 }
 
 static GColor get_bg_color(void) { return s_theme == 3 ? GColorWhite : GColorBlack; }
@@ -229,32 +242,30 @@ static void accel_handler(AccelData *data, uint32_t num_samples) {
   int32_t T = tkeo_thresh_of(s_thresh);
 
   for (uint32_t i = 0; i < num_samples; i++) {
-    /* Fast-forward the refractory window in one jump. */
+    memmove(&s_hist[0], &s_hist[1], sizeof(int16_t) * 3 * 4);
+    
+    // 2. Insert new sample at the end
+    s_hist[4][0] = data[i].x;
+    s_hist[4][1] = data[i].y;
+    s_hist[4][2] = data[i].z;
+    
+    if (s_hist_count < 5) {
+        s_hist_count++;
+        continue; // Wait until we have a full buffer
+    }
+
+    // Refractory skip (simplified for the new buffer structure)
     if (s_refractory > 0) {
-      uint32_t skip = MIN((uint32_t)s_refractory, num_samples - i);
-      s_refractory -= (int)skip;
-      uint32_t last = i + skip - 1;
-      if (skip == 1) {
-        s_prev[0][0] = s_prev[1][0]; s_prev[0][1] = s_prev[1][1]; s_prev[0][2] = s_prev[1][2];
-        s_prev[1][0] = data[last].x; s_prev[1][1] = data[last].y; s_prev[1][2] = data[last].z;
-      } else {
-        s_prev[0][0] = data[last - 1].x; s_prev[0][1] = data[last - 1].y; s_prev[0][2] = data[last - 1].z;
-        s_prev[1][0] = data[last].x;     s_prev[1][1] = data[last].y;     s_prev[1][2] = data[last].z;
-      }
-      i = last;
-      continue;
+        s_refractory--;
+        continue;
     }
 
-    if (!s_has_prev) {
-      s_prev[0][0] = data[i].x; s_prev[0][1] = data[i].y; s_prev[0][2] = data[i].z;
-      s_prev[1][0] = data[i].x; s_prev[1][1] = data[i].y; s_prev[1][2] = data[i].z;
-      s_has_prev = true;
-      continue;
-    }
-
-    int32_t tx = tkeo_axis(s_prev[0][0], s_prev[1][0], data[i].x);
-    int32_t ty = tkeo_axis(s_prev[0][1], s_prev[1][1], data[i].y);
-    int32_t tz = tkeo_axis(s_prev[0][2], s_prev[1][2], data[i].z);
+    // 3. Apply the filter
+    int32_t tx = mexican_hat_axis(0);
+    int32_t ty = mexican_hat_axis(1);
+    int32_t tz = mexican_hat_axis(2);
+    
+    int32_t e = tx + ty + tz;
     int32_t e = tx + ty + tz;
 
     s_prev[0][0] = s_prev[1][0]; s_prev[0][1] = s_prev[1][1]; s_prev[0][2] = s_prev[1][2];
