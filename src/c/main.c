@@ -30,6 +30,7 @@ static bool s_show_mag = true, s_debug_mode = false;
 static int s_refractory = 50;
 static int16_t s_hist[5][3];
 static int s_hist_count = 0;
+static int32_t s_cand_run = 0;
 
 static int32_t s_ring[RING_SIZE];
 static int32_t s_ri;
@@ -112,6 +113,21 @@ static inline int32_t tkeo_thresh_of(int32_t s) {
 
 #define SCOPE_MAX 120000000
 #define SCOPE_MIN 10000
+
+/* Wrist-flick false-positive suppression. A genuine tap is a single sharp,
+ * high-amplitude excursion; a wrist-flick (fast rotation ramp settling into
+ * a mechanical rattle) is a train of smaller, sustained oscillations that
+ * can still poke the mexican_hat_axis energy above threshold on individual
+ * cycles. Two cheap gates applied only at the moment of a threshold
+ * crossing: the excursion must have real peak-to-peak amplitude on at least
+ * one axis, and energy must not have been sitting above a low candidate
+ * floor for very long beforehand (a real tap clears in 1-2 samples; a
+ * rattle keeps re-crossing for many). PTP_MIN and CAND_WIDTH_CAP below are
+ * initial estimates from synthetic testing -- recalibrate against real
+ * recorded wrist-flick and shot traces (s_debug_mode scope capture) before
+ * trusting them at the extremes. */
+#define PTP_MIN 2000
+#define CAND_WIDTH_CAP 3
 
 /* Fast integer log2 approximation via Cortex-M hardware CLZ instruction.
  * int32_t is sufficient: tx/ty/tz sums stay well under INT32_MAX for real accel input. */
@@ -285,10 +301,28 @@ static void accel_handler(AccelData *data, uint32_t num_samples) {
       }
     }
 
-    if (e >= T) {
+    /* Peak-to-peak over the same 5-sample window mexican_hat_axis already
+     * uses -- no extra buffer needed. Take the largest single-axis swing. */
+    int32_t ptp_max = 0;
+    for (int a = 0; a < 3; a++) {
+      int16_t lo = s_hist[0][a], hi = s_hist[0][a];
+      for (int k = 1; k < 5; k++) {
+        if (s_hist[k][a] < lo) lo = s_hist[k][a];
+        if (s_hist[k][a] > hi) hi = s_hist[k][a];
+      }
+      int32_t ptp = (int32_t)hi - (int32_t)lo;
+      if (ptp > ptp_max) ptp_max = ptp;
+    }
+
+    /* Candidate-duration tracking: how many consecutive samples has energy
+     * stayed above a low floor (T/8)? Resets whenever it drops back down. */
+    if (e >= (T >> 3)) { s_cand_run++; } else { s_cand_run = 0; }
+
+    if (e >= T && ptp_max >= PTP_MIN && s_cand_run <= CAND_WIDTH_CAP) {
       s_shots++;
       maybe_persist_shots();
       s_refractory = s_refr_samples;
+      s_cand_run = 0;
       update_display();
       break;
     }
