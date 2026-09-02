@@ -28,8 +28,9 @@ static GFont s_font;
 static int32_t s_shots, s_mag_cap = 10, s_thresh = 50, s_rof_rps = 3, s_refr_samples = 33, s_theme;
 static bool s_show_mag = true, s_debug_mode = false;
 static int s_refractory = 50;
-static int16_t s_prev[2][3];
-static bool s_has_prev;
+static int16_t s_hist[5][3];
+static int s_hist_count = 0;
+static int32_t s_cand_run = 0;
 
 static int32_t s_ring[RING_SIZE];
 static int32_t s_ri;
@@ -43,6 +44,7 @@ static void clear_scope(void) {
   s_ri = 0;
   layer_mark_dirty(s_scope);
 }
+
 
 /* ---------------- persistence ---------------- */
 static time_t s_last_persist = 0;
@@ -87,6 +89,17 @@ static void update_refractory(void) {
   s_win_count = 0; s_win_peak = 0;
 }
 
+static inline int32_t mexican_hat_axis(int axis) {
+    // Kernel: [-1, -2, 6, -2, -1]
+    int32_t val = 
+        (-1 * s_hist[0][axis]) + 
+        (-2 * s_hist[1][axis]) + 
+        ( 6 * s_hist[2][axis]) + 
+        (-2 * s_hist[3][axis]) + 
+        (-1 * s_hist[4][axis]);
+    return (val * val) >> 4; 
+}
+
 static GColor get_bg_color(void) { return s_theme == 3 ? GColorWhite : GColorBlack; }
 static GColor get_fg_color(void) {
   static const GColor colors[] = { GColorWhite, GColorCyan, GColorGreen, GColorBlack, GColorRed };
@@ -100,6 +113,21 @@ static inline int32_t tkeo_thresh_of(int32_t s) {
 
 #define SCOPE_MAX 120000000
 #define SCOPE_MIN 10000
+
+/* Wrist-flick false-positive suppression. A genuine tap is a single sharp,
+ * high-amplitude excursion; a wrist-flick (fast rotation ramp settling into
+ * a mechanical rattle) is a train of smaller, sustained oscillations that
+ * can still poke the mexican_hat_axis energy above threshold on individual
+ * cycles. Two cheap gates applied only at the moment of a threshold
+ * crossing: the excursion must have real peak-to-peak amplitude on at least
+ * one axis, and energy must not have been sitting above a low candidate
+ * floor for very long beforehand (a real tap clears in 1-2 samples; a
+ * rattle keeps re-crossing for many). PTP_MIN and CAND_WIDTH_CAP below are
+ * initial estimates from synthetic testing -- recalibrate against real
+ * recorded wrist-flick and shot traces (s_debug_mode scope capture) before
+ * trusting them at the extremes. */
+#define PTP_MIN 2000
+#define CAND_WIDTH_CAP 3
 
 /* Fast integer log2 approximation via Cortex-M hardware CLZ instruction.
  * int32_t is sufficient: tx/ty/tz sums stay well under INT32_MAX for real accel input. */
@@ -229,36 +257,30 @@ static void accel_handler(AccelData *data, uint32_t num_samples) {
   int32_t T = tkeo_thresh_of(s_thresh);
 
   for (uint32_t i = 0; i < num_samples; i++) {
-    /* Fast-forward the refractory window in one jump. */
+    memmove(&s_hist[0], &s_hist[1], sizeof(int16_t) * 3 * 4);
+    
+    // 2. Insert new sample at the end
+    s_hist[4][0] = data[i].x;
+    s_hist[4][1] = data[i].y;
+    s_hist[4][2] = data[i].z;
+    
+    if (s_hist_count < 5) {
+        s_hist_count++;
+        continue; // Wait until we have a full buffer
+    }
+
+    // Refractory skip (simplified for the new buffer structure)
     if (s_refractory > 0) {
-      uint32_t skip = MIN((uint32_t)s_refractory, num_samples - i);
-      s_refractory -= (int)skip;
-      uint32_t last = i + skip - 1;
-      if (skip == 1) {
-        s_prev[0][0] = s_prev[1][0]; s_prev[0][1] = s_prev[1][1]; s_prev[0][2] = s_prev[1][2];
-        s_prev[1][0] = data[last].x; s_prev[1][1] = data[last].y; s_prev[1][2] = data[last].z;
-      } else {
-        s_prev[0][0] = data[last - 1].x; s_prev[0][1] = data[last - 1].y; s_prev[0][2] = data[last - 1].z;
-        s_prev[1][0] = data[last].x;     s_prev[1][1] = data[last].y;     s_prev[1][2] = data[last].z;
-      }
-      i = last;
-      continue;
+        s_refractory--;
+        continue;
     }
 
-    if (!s_has_prev) {
-      s_prev[0][0] = data[i].x; s_prev[0][1] = data[i].y; s_prev[0][2] = data[i].z;
-      s_prev[1][0] = data[i].x; s_prev[1][1] = data[i].y; s_prev[1][2] = data[i].z;
-      s_has_prev = true;
-      continue;
-    }
-
-    int32_t tx = tkeo_axis(s_prev[0][0], s_prev[1][0], data[i].x);
-    int32_t ty = tkeo_axis(s_prev[0][1], s_prev[1][1], data[i].y);
-    int32_t tz = tkeo_axis(s_prev[0][2], s_prev[1][2], data[i].z);
+    // 3. Apply the filter
+    int32_t tx = mexican_hat_axis(0);
+    int32_t ty = mexican_hat_axis(1);
+    int32_t tz = mexican_hat_axis(2);
+    
     int32_t e = tx + ty + tz;
-
-    s_prev[0][0] = s_prev[1][0]; s_prev[0][1] = s_prev[1][1]; s_prev[0][2] = s_prev[1][2];
-    s_prev[1][0] = data[i].x; s_prev[1][1] = data[i].y; s_prev[1][2] = data[i].z;
 
     /* Only scope_update() reads s_ring/s_hold, and it no-ops when !s_debug_mode, so skip bookkeeping too. */
     if (s_debug_mode) {
@@ -279,10 +301,28 @@ static void accel_handler(AccelData *data, uint32_t num_samples) {
       }
     }
 
-    if (e >= T) {
+    /* Peak-to-peak over the same 5-sample window mexican_hat_axis already
+     * uses -- no extra buffer needed. Take the largest single-axis swing. */
+    int32_t ptp_max = 0;
+    for (int a = 0; a < 3; a++) {
+      int16_t lo = s_hist[0][a], hi = s_hist[0][a];
+      for (int k = 1; k < 5; k++) {
+        if (s_hist[k][a] < lo) lo = s_hist[k][a];
+        if (s_hist[k][a] > hi) hi = s_hist[k][a];
+      }
+      int32_t ptp = (int32_t)hi - (int32_t)lo;
+      if (ptp > ptp_max) ptp_max = ptp;
+    }
+
+    /* Candidate-duration tracking: how many consecutive samples has energy
+     * stayed above a low floor (T/8)? Resets whenever it drops back down. */
+    if (e >= (T >> 3)) { s_cand_run++; } else { s_cand_run = 0; }
+
+    if (e >= T && ptp_max >= PTP_MIN && s_cand_run <= CAND_WIDTH_CAP) {
       s_shots++;
       maybe_persist_shots();
       s_refractory = s_refr_samples;
+      s_cand_run = 0;
       update_display();
       break;
     }
