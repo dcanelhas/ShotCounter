@@ -30,6 +30,7 @@ static bool s_show_mag = true, s_debug_mode = false;
 static int s_refractory = 50;
 static int16_t s_prev[2][3];
 static bool s_has_prev;
+static int32_t s_cand_run = 0;
 
 static int32_t s_ring[RING_SIZE];
 static int32_t s_ri;
@@ -100,6 +101,25 @@ static inline int32_t tkeo_thresh_of(int32_t s) {
 
 #define SCOPE_MAX 120000000
 #define SCOPE_MIN 10000
+
+/* Wrist-flick false-positive suppression. A genuine tap is a single sharp,
+ * high-amplitude excursion; a wrist-flick (fast rotation ramp settling into
+ * a mechanical rattle) is a train of smaller, sustained oscillations that
+ * can still poke TKEO energy above threshold on individual cycles, since
+ * TKEO has no memory of duration -- each cycle looks locally similar to a
+ * genuine tap over its 3-sample (p, c, n) window. Two cheap gates applied
+ * only at the moment of a threshold crossing: the excursion must have real
+ * peak-to-peak amplitude on at least one axis over that same 3-sample
+ * window, and energy must not have been sitting above a low candidate
+ * floor for very long beforehand (a real tap clears in 1-2 samples; a
+ * rattle keeps re-crossing for many). PTP_MIN and CAND_WIDTH_CAP below are
+ * initial estimates from synthetic testing -- recalibrate against real
+ * recorded traces (s_debug_mode scope capture) before trusting them at the
+ * extremes. Note this window is narrower (3 samples) than the 5-sample
+ * window used in the mexican-hat variant of this gate, so PTP_MIN may need
+ * separate tuning if that branch is revisited later. */
+#define PTP_MIN 2000
+#define CAND_WIDTH_CAP 3
 
 /* Fast integer log2 approximation via Cortex-M hardware CLZ instruction.
  * int32_t is sufficient: tx/ty/tz sums stay well under INT32_MAX for real accel input. */
@@ -257,8 +277,23 @@ static void accel_handler(AccelData *data, uint32_t num_samples) {
     int32_t tz = tkeo_axis(s_prev[0][2], s_prev[1][2], data[i].z);
     int32_t e = tx + ty + tz;
 
+    /* Peak-to-peak over the same (p, c, n) window tkeo_axis just used --
+     * must be captured here, before s_prev is shifted below. */
+    int32_t ptp_max = 0;
+    int16_t cur[3] = { data[i].x, data[i].y, data[i].z };
+    for (int a = 0; a < 3; a++) {
+      int16_t lo = MIN(MIN(s_prev[0][a], s_prev[1][a]), cur[a]);
+      int16_t hi = MAX(MAX(s_prev[0][a], s_prev[1][a]), cur[a]);
+      int32_t ptp = (int32_t)hi - (int32_t)lo;
+      if (ptp > ptp_max) ptp_max = ptp;
+    }
+
     s_prev[0][0] = s_prev[1][0]; s_prev[0][1] = s_prev[1][1]; s_prev[0][2] = s_prev[1][2];
     s_prev[1][0] = data[i].x; s_prev[1][1] = data[i].y; s_prev[1][2] = data[i].z;
+
+    /* Candidate-duration tracking: how many consecutive samples has energy
+     * stayed above a low floor (T/8)? Resets whenever it drops back down. */
+    if (e >= (T >> 3)) { s_cand_run++; } else { s_cand_run = 0; }
 
     /* Only scope_update() reads s_ring/s_hold, and it no-ops when !s_debug_mode, so skip bookkeeping too. */
     if (s_debug_mode) {
@@ -279,10 +314,11 @@ static void accel_handler(AccelData *data, uint32_t num_samples) {
       }
     }
 
-    if (e >= T) {
+    if (e >= T && ptp_max >= PTP_MIN && s_cand_run <= CAND_WIDTH_CAP) {
       s_shots++;
       maybe_persist_shots();
       s_refractory = s_refr_samples;
+      s_cand_run = 0;
       update_display();
       break;
     }
